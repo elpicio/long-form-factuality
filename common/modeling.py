@@ -41,6 +41,17 @@ _ANTHROPIC_MODELS = [
     'claude-2.0',
     'claude-instant-1.2',
 ]
+_OPENAI_RETRY_ERRORS = tuple(
+    getattr(openai.error, name)
+    for name in [
+        'RateLimitError',
+        'APIConnectionError',
+        'APIError',
+        'ServiceUnavailableError',
+        'Timeout',
+    ]
+    if hasattr(openai.error, name)
+)
 
 
 class Usage(pg.Object):
@@ -54,6 +65,107 @@ class LMSamplingResult(lf.LMSamplingResult):
   """LMSamplingResult with usage information."""
 
   usage: Usage | None = None
+
+
+@lf.use_init_args(['model'])
+class OpenAICompatibleChatModel(lf.LanguageModel):
+  """OpenAI-compatible chat completion model."""
+
+  model: Annotated[str, 'The name of the model to use.'] = 'gpt-5.4-mini'
+  api_key: Annotated[
+      str | None,
+      'API key. If None, the key is read from shared_config or OPENAI_API_KEY.',
+  ] = None
+  api_base: Annotated[
+      str | None,
+      'OpenAI-compatible API base URL.',
+  ] = None
+
+  def _on_bound(self) -> None:
+    super()._on_bound()
+    self.__dict__.pop('_api_initialized', None)
+
+  @functools.cached_property
+  def _api_initialized(self) -> bool:
+    self.api_key = (
+        self.api_key
+        or shared_config.openai_api_key
+        or os.environ.get('OPENAI_API_KEY')
+    )
+    self.api_base = (
+        self.api_base
+        or shared_config.openai_base_url
+        or os.environ.get('OPENAI_API_BASE')
+        or os.environ.get('OPENAI_BASE_URL')
+    )
+
+    if not self.api_key:
+      raise ValueError(
+          'Please specify `api_key` or set CODEXAPIS_API_KEY, '
+          'LONGFACT_OPENAI_API_KEY, or OPENAI_API_KEY.'
+      )
+
+    openai.api_key = self.api_key
+    if self.api_base:
+      openai.api_base = self.api_base.rstrip('/')
+    return True
+
+  @property
+  def model_id(self) -> str:
+    """Returns a string to identify the model."""
+    return f'OpenAICompatibleChat({self.model})'
+
+  def _get_request_args(
+      self, options: lf.LMSamplingOptions
+  ) -> dict[str, Any]:
+    args = dict(
+        temperature=options.temperature,
+        max_tokens=options.max_tokens,
+        model=self.model,
+    )
+    if options.top_p is not None:
+      args['top_p'] = options.top_p
+    if options.stop:
+      args['stop'] = options.stop
+    return args
+
+  def _sample(self, prompts: list[lf.Message]) -> list[LMSamplingResult]:
+    assert self._api_initialized
+    return self._complete_batch(prompts)
+
+  def _complete_batch(
+      self, prompts: list[lf.Message]
+  ) -> list[LMSamplingResult]:
+    def _chat_completion(prompt: lf.Message) -> LMSamplingResult:
+      openai.api_key = self.api_key
+      if self.api_base:
+        openai.api_base = self.api_base.rstrip('/')
+
+      response = openai.ChatCompletion.create(
+          messages=[{'role': 'user', 'content': prompt.text}],
+          **self._get_request_args(self.sampling_options),
+      )
+      model_response = response['choices'][0]['message']['content']
+      response_usage = response.get('usage', {}) if hasattr(response, 'get') else {}
+      samples = [lf.LMSample(model_response, score=0.0)]
+      return LMSamplingResult(
+          samples=samples,
+          usage=Usage(
+              prompt_tokens=response_usage.get('prompt_tokens', 0),
+              completion_tokens=response_usage.get('completion_tokens', 0),
+          ),
+      )
+
+    return lf.concurrent_execute(
+        _chat_completion,
+        prompts,
+        executor=self.resource_id,
+        max_workers=1,
+        max_attempts=self.max_attempts,
+        retry_interval=self.retry_interval,
+        exponential_backoff=self.exponential_backoff,
+        retry_on_errors=_OPENAI_RETRY_ERRORS or (openai.error.OpenAIError,),
+    )
 
 
 @lf.use_init_args(['model'])
@@ -192,9 +304,10 @@ class Model:
         utils.maybe_print_error('No OpenAI API Key specified.')
         utils.stop_all_execution(True)
 
-      return lf.llms.OpenAI(
+      return OpenAICompatibleChatModel(
           model=model_name[7:],
           api_key=shared_config.openai_api_key,
+          api_base=shared_config.openai_base_url,
           sampling_options=sampling,
       )
     elif model_name.lower().startswith('anthropic:'):

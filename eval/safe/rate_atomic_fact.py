@@ -17,6 +17,8 @@ import dataclasses
 import re
 from typing import Any
 
+import requests
+
 # pylint: disable=g-bad-import-order
 from common import modeling
 from common import shared_config
@@ -89,6 +91,10 @@ def call_search(
     search_type: str = safe_config.search_type,
     num_searches: int = safe_config.num_searches,
     serper_api_key: str = shared_config.serper_api_key,
+    brave_search_api_key: str = shared_config.brave_search_api_key,
+    openai_api_key: str = shared_config.openai_search_api_key,
+    openai_base_url: str = shared_config.openai_search_base_url,
+    openai_web_search_model: str = shared_config.openai_web_search_model,
     search_postamble: str = '',  # ex: 'site:https://en.wikipedia.org'
 ) -> str:
   """Call Google Search to get the search result."""
@@ -97,8 +103,128 @@ def call_search(
   if search_type == 'serper':
     serper_searcher = query_serper.SerperAPI(serper_api_key, k=num_searches)
     return serper_searcher.run(search_query, k=num_searches)
+  elif search_type == 'brave':
+    return _call_brave_search(search_query, brave_search_api_key, num_searches)
+  elif search_type == 'openai_web':
+    return _call_openai_web_search(
+        search_query=search_query,
+        openai_api_key=openai_api_key,
+        openai_base_url=openai_base_url,
+        model_name=openai_web_search_model,
+        num_searches=num_searches,
+    )
   else:
     raise ValueError(f'Unsupported search type: {search_type}')
+
+
+def _call_brave_search(
+    search_query: str,
+    brave_search_api_key: str,
+    num_searches: int,
+) -> str:
+  """Call Brave Search and format web results as SAFE evidence."""
+  assert brave_search_api_key, 'Missing brave_search_api_key.'
+  response = requests.get(
+      'https://api.search.brave.com/res/v1/web/search',
+      headers={
+          'X-Subscription-Token': brave_search_api_key,
+          'Accept': 'application/json',
+      },
+      params={'q': search_query, 'count': num_searches},
+      timeout=30,
+  )
+  response.raise_for_status()
+  data = response.json()
+  results = data.get('web', {}).get('results', [])[:num_searches]
+  snippets = []
+  for result in results:
+    title = result.get('title', '')
+    url = result.get('url', '')
+    description = result.get('description', '')
+    extra_snippets = result.get('extra_snippets') or []
+    lines = []
+    if title:
+      lines.append(f'Title: {title}')
+    if url:
+      lines.append(f'URL: {url}')
+    if description:
+      lines.append(f'Snippet: {description}')
+    for extra in extra_snippets:
+      if extra:
+        lines.append(f'Snippet: {extra}')
+    if lines:
+      snippets.append('\n'.join(lines))
+  return '\n\n'.join(snippets) if snippets else query_serper.NO_RESULT_MSG
+
+
+def _call_openai_web_search(
+    search_query: str,
+    openai_api_key: str,
+    openai_base_url: str,
+    model_name: str,
+    num_searches: int,
+) -> str:
+  """Call OpenAI Responses web_search and format cited output as evidence."""
+  assert openai_api_key, 'Missing openai_api_key.'
+  base_url = openai_base_url or 'https://api.openai.com/v1'
+  endpoint = f'{base_url.rstrip("/")}/responses'
+  response = requests.post(
+      endpoint,
+      headers={
+          'Authorization': f'Bearer {openai_api_key}',
+          'Content-Type': 'application/json',
+      },
+      json={
+          'model': model_name,
+          'tools': [{'type': 'web_search'}],
+          'input': (
+              'Search the web for evidence relevant to this fact-checking '
+              f'query. Return concise evidence with sources: {search_query}'
+          ),
+      },
+      timeout=120,
+  )
+  response.raise_for_status()
+  text, citations = _extract_openai_web_evidence(response.json())
+  evidence = []
+  if text:
+    evidence.append(f'Web search summary: {text}')
+  for citation in citations[:num_searches]:
+    title = citation.get('title') or ''
+    url = citation.get('url') or ''
+    lines = []
+    if title:
+      lines.append(f'Title: {title}')
+    if url:
+      lines.append(f'URL: {url}')
+    if lines:
+      evidence.append('\n'.join(lines))
+  return '\n\n'.join(evidence) if evidence else query_serper.NO_RESULT_MSG
+
+
+def _extract_openai_web_evidence(
+    response_data: dict[str, Any],
+) -> tuple[str, list[dict[str, str]]]:
+  """Extract text and URL citations from Responses API output."""
+  texts = []
+  citations = []
+  if response_data.get('output_text'):
+    texts.append(str(response_data['output_text']))
+
+  for item in response_data.get('output', []):
+    for content in item.get('content', []):
+      text = content.get('text')
+      if text:
+        texts.append(text)
+      for annotation in content.get('annotations', []):
+        citation = annotation.get('url_citation') or {}
+        url = citation.get('url')
+        if url:
+          citations.append({
+              'title': citation.get('title', ''),
+              'url': url,
+          })
+  return '\n'.join(texts), citations
 
 
 def maybe_get_next_search(

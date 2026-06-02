@@ -40,6 +40,40 @@ To install all packages, and run the following command.
 pip install -r requirements.txt
 ```
 
+### llm_uncertainty workspace fork
+
+This checkout is used as an external LongFact/SAFE baseline inside
+`/home/elp/project/llm_uncertainty`. Run local checks and SAFE jobs in the
+isolated environment:
+
+```bash
+conda run -n llm_uq_longfact python ...
+```
+
+Important local changes:
+
+- `common/shared_config.py` loads the project `.env` and supports
+  OpenAI-compatible evaluator endpoints. Evaluator credentials are read from
+  `LONGFACT_OPENAI_API_KEY`, `CODEXAPIS_API_KEY`, `OPENAI_API_KEY`, or
+  `GPTGOD_API_KEY`; evaluator base URLs are read from
+  `LONGFACT_OPENAI_BASE_URL`, `CODEXAPIS_BASE_URL`, `OPENAI_API_BASE`,
+  `OPENAI_BASE_URL`, or `GPTGOD_BASE_URL`. The default evaluator model is
+  `LONGFACT_OPENAI_MODEL`, `CODEXAPIS_EXTRACTOR_MODEL`, or `OPENAI_MODEL`,
+  falling back to `gpt-5.4-mini`.
+- SAFE search credentials are separate from evaluator credentials. For
+  OpenAI-compatible web search, set `LONGFACT_SEARCH_OPENAI_API_KEY`,
+  `LONGFACT_SEARCH_OPENAI_BASE_URL`, and optionally
+  `LONGFACT_SEARCH_OPENAI_MODEL`. If they are unset, the search wrapper falls
+  back to the evaluator key/base URL/model for backward compatibility.
+- `eval/safe/rate_atomic_fact.py` supports `serper`, `brave`, and `openai_web`.
+  The current workspace default for LongFact evaluation is intended to be
+  `LONGFACT_SAFE_SEARCH_TYPE=openai_web` with `gpt-5.4-mini`. This is
+  SAFE-style LLM web search, not the original paper's Serper-backed SAFE.
+- The repository still pins `openai==0.27.2`. The evaluator uses the old
+  ChatCompletion interface, while `openai_web` calls the Responses
+  `/responses` endpoint through `requests`, so no OpenAI SDK upgrade is needed
+  for the current wrapper.
+
 ## Usage
 ### LongFact
 The full prompt set for LongFact is available in the `longfact/` folder.

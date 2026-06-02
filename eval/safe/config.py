@@ -13,6 +13,8 @@
 # limitations under the License.
 """Shared configuration across SAFE files."""
 
+import os
+
 from common import shared_config
 
 
@@ -34,17 +36,20 @@ from common import shared_config
 #     'claude_instant',
 # ]
 ################################################################################
-model_short = 'gpt_35_turbo'
-model_temp = 0.1
-max_tokens = 512
+model_short = os.environ.get(
+    'LONGFACT_SAFE_MODEL_SHORT',
+    'gpt_54_mini' if shared_config.openai_api_key else 'gpt_35_turbo',
+)
+model_temp = float(os.environ.get('LONGFACT_SAFE_MODEL_TEMP', '0.1'))
+max_tokens = int(os.environ.get('LONGFACT_SAFE_MAX_TOKENS', '512'))
 
 ################################################################################
 #                              SEARCH SETTINGS
-# search_type: str = Google Search API used. Choose from ['serper'].
+# search_type: str = Search API used. Choose from ['serper', 'brave', 'openai_web'].
 # num_searches: int = Number of results to show per search.
 ################################################################################
-search_type = 'serper'
-num_searches = 3
+search_type = os.environ.get('LONGFACT_SAFE_SEARCH_TYPE', 'serper')
+num_searches = int(os.environ.get('LONGFACT_SAFE_NUM_SEARCHES', '3'))
 
 ################################################################################
 #                               SAFE SETTINGS
@@ -52,9 +57,9 @@ num_searches = 3
 # max_retries: int = maximum number of retries when fact checking fails.
 # debug_safe: bool = show debugging printouts when running SAFE.
 ################################################################################
-max_steps = 5
-max_retries = 10
-debug_safe = False
+max_steps = int(os.environ.get('LONGFACT_SAFE_MAX_STEPS', '5'))
+max_retries = int(os.environ.get('LONGFACT_SAFE_MAX_RETRIES', '10'))
+debug_safe = os.environ.get('LONGFACT_SAFE_DEBUG', '').lower() in {'1', 'true', 'yes'}
 
 ################################################################################
 #                         FORCED SETTINGS, DO NOT EDIT
